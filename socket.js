@@ -3,7 +3,7 @@ const { Server } = require("socket.io");
 const connectedUsers = {}; // Tracks users in each room
 const roomStates = {};     // Tracks game state in each room
 
-const CHOICE_TIME = 20000;      // Time limit for each player to make a choice in milliseconds
+const CHOICE_TIME = 1000;      // Time limit for each player to make a choice in milliseconds
 const RECONNECTION_TIME = 20000; // Time allowed for reconnection after disconnection
 
 function setupSocket(server) {
@@ -109,7 +109,7 @@ function handlePlayerChoice(socket, msg, io) {
             roomState.scores[player2]++;
         }
 
-        io.to(room).emit('round-result', {
+        io.to(room).emit('room-event:round-result', {
             round: roomState.round,
             choices: roomState.choices,
             result,
@@ -122,7 +122,7 @@ function handlePlayerChoice(socket, msg, io) {
         if (roomState.scores[player1] === 5 || roomState.scores[player2] === 5) {
             let winner = roomState.scores[player1] === 5 ? player1 : player2;
             if (roomState.scores[player1] === roomState.scores[player2]) winner = 'tie';
-            io.to(room).emit('game-over', { winner });
+            io.to(room).emit('room-event:game-over', { winner });
             cleanupGame(room);
         } else {
             startNextRound(io, room);
@@ -141,7 +141,7 @@ function startNextRound(io, ROOM_NAME) {
     roomState.roundTimeout = setInterval(() => {
         if (roomState.paused) return; // Stop the countdown if the game is paused
 
-        io.to(ROOM_NAME).emit('round-timer', { remainingTime });
+        io.to(ROOM_NAME).emit('room-event:round-timer', { remainingTime });
         remainingTime -= 1;
 
         if (remainingTime <= 0) {
@@ -192,7 +192,7 @@ function markUserForReconnection(username, room, io) {
 
             if (roomToDisconnectFrom) {
                 if (roomToDisconnectFrom.connectedUsers.length > 0) {
-                    io.to(room).emit('game-over', { winner: roomToDisconnectFrom.connectedUsers[0].username });
+                    io.to(room).emit('room-event:game-over', { winner: roomToDisconnectFrom.connectedUsers[0].username });
                 }
                 cleanupGame(room);
             }
@@ -205,6 +205,9 @@ function cleanupGame(ROOM_NAME) {
     const roomState = roomStates[ROOM_NAME];
     if (roomState) {
         clearInterval(roomState.roundTimeout);
+        roomState.connectedUsers.forEach(user => {
+            delete connectedUsers[user.socketId]
+        })
         delete roomStates[ROOM_NAME];
     }
 }
