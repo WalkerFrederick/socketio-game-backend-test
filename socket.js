@@ -3,16 +3,22 @@ const { Server } = require("socket.io");
 const connectedUsers = {}; // Tracks users in each room
 const roomStates = {};     // Tracks game state in each room
 
-const CHOICE_TIME = 1000;      // Time limit for each player to make a choice in milliseconds
+const CHOICE_TIME = 15000;      // Time limit for each player to make a choice in milliseconds
 const RECONNECTION_TIME = 20000; // Time allowed for reconnection after disconnection
 
 function setupSocket(server) {
-    const io = new Server(server);
+
+    const io = new Server(server, {
+        cors: {
+            origin: "http://192.168.50.202:3000", // Allow only this origin
+        }
+    }); 
 
     io.on('connection', (socket) => {
         socket.on('connect-to-room', (msg) => handleConnectToRoom(socket, msg, io));
         socket.on("disconnecting", () => handleDisconnecting(socket, io));
         socket.on('player-choice', (msg) => handlePlayerChoice(socket, msg, io));
+        socket.on('player-ready', (msg) => handlePlayerReady(msg, io));
     });
 
     return io;
@@ -43,16 +49,16 @@ function handleConnectToRoom(socket, msg, io) {
         if (oldSocketId) {
             delete connectedUsers[oldSocketId];
         }
-        connectedUsers[socket.id] = { username, room, socketId: socket.id };
+        connectedUsers[socket.id] = { username, room, socketId: socket.id, ready: true };
         socket.emit('room-event:reconnect', `${username} rejoined ${ROOM_NAME}`);
         roomStates[ROOM_NAME].paused = false;
     } else {
-        connectedUsers[socket.id] = { username, room, socketId: socket.id };
+        connectedUsers[socket.id] = { username, room, socketId: socket.id, ready: false };
     }
 
     if (!roomStates[ROOM_NAME]) {
         roomStates[ROOM_NAME] = {
-            connectedUsers: [{ username, socketId: socket.id }],
+            connectedUsers: [{ username, socketId: socket.id, ready: false }],
             scores: { [username]: 0 },
             round: 1,
             choices: {},
@@ -60,7 +66,7 @@ function handleConnectToRoom(socket, msg, io) {
             paused: false
         };
     } else {
-        roomStates[ROOM_NAME].connectedUsers.push({ username, socketId: socket.id });
+        roomStates[ROOM_NAME].connectedUsers.push({ username, socketId: socket.id, ready: false });
         if (!roomStates[ROOM_NAME].scores[username]) {
             roomStates[ROOM_NAME].scores[username] = 0;
 
@@ -70,8 +76,7 @@ function handleConnectToRoom(socket, msg, io) {
     io.to(ROOM_NAME).emit('room-event:join', `${username} joined ${ROOM_NAME}`);
 
     if (roomStates[ROOM_NAME].connectedUsers.length === 2) {
-        io.to(ROOM_NAME).emit('room-event:ready', 'players are ready, waiting for choice');
-        startNextRound(io, ROOM_NAME);
+        io.to(ROOM_NAME).emit('room-event:match-formed', roomStates[ROOM_NAME]);
     }
 }
 
@@ -80,6 +85,28 @@ function determineRoundWinner(choice1, choice2) {
     const winMap = { rock: 'scissors', paper: 'rock', scissors: 'paper' };
     if (choice1 === choice2) return 'tie';
     return winMap[choice1] === choice2 ? 'player1' : 'player2';
+}
+
+function handlePlayerReady(msg, io) {
+    const { username, room } = msg;
+    const roomState = roomStates[room];
+    let playersReady = 0
+    roomState.connectedUsers.forEach(user => {
+        if (user.ready === true && username !== user.username) {
+            playersReady++
+        }
+        if (username === user.username) {
+            playersReady++
+            user.ready = true
+        }
+    })
+    if ((playersReady === roomState.connectedUsers.length) && roomState.connectedUsers.length > 1) {
+        io.to(room).emit('room-event:ready', roomStates[room]);
+        io.to(room).emit('room-event:game-start', roomStates[room]);
+        startNextRound(io, room);
+    } else {
+        io.to(room).emit('room-event:ready', roomStates[room]);
+    }
 }
 
 // Handles player choices and determines round outcomes
@@ -110,6 +137,8 @@ function handlePlayerChoice(socket, msg, io) {
         }
 
         io.to(room).emit('room-event:round-result', {
+            connectedUsers: roomState.connectedUsers,
+            paused: roomState.paused,
             round: roomState.round,
             choices: roomState.choices,
             result,
